@@ -24,4 +24,10 @@ addresses and coordinates of houses in BW
 ## Hackathon\Daten Hackaton (ALKIS,Nexiga,PV,HK)\Datenquellen\Hauskoordinaten
 ??
 
-## 
+## Hackathon\Daten Hackaton (ALKIS,Nexiga,PV,HK)\Datenquellen\Nexiga Daten
+Socio economical data on single households with coordinates
+see this file for description of the variables:
+`Hackathon\Daten Hackaton (ALKIS,Nexiga,PV,HK)\Dokumente\Hackathon_Infos 1.xlsx`
+
+## Hackathon\Daten Hackaton (ALKIS,Nexiga,PV,HK)\Datenquellen\Solarpotenzial
+Shape files about the solar potential in certain regions
