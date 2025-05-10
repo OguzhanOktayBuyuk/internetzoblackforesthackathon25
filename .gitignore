@@ -3,3 +3,5 @@ data/Hackathon/*
 internetzo/*
 internetzo/bin/*
 geojson/*
+data/
+__pycache__/
