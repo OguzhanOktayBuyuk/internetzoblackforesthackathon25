@@ -1,0 +1,116 @@
+Field	Description
+[Identifier] OBJECTID	System-assigned unique record identifier in the shapefile: birincil anahtar
+[Identifier] BuildingID	
+Unique identifier for each building: her bina icin benzersizdir. Birden fazla cati polygon ayni ise bunlari iliskilendirmede kullanilir.
+ 
+[Identifier] RoofID	
+Identifier for each distinct roof surface within a building.: ayni binadaki birden fazla cok ayri cati yuzeyini ayirt eden kimlik. Bir catidan birden fazla polygon cikmissa her birine farkli roofed verilir.
+ 
+[Roof] Slope	Roof surface tilt angle relative to horizontal (degrees): cati yuzeyinin yatay duzleme gore egim acisi (derece) optimum günes enerji verimi icin genellikle 25-35 derece arasi idealdir.
+
+[Roof] Aspect	
+Roof surface orientation in degrees (0° = North, 90° = East, 180° = South, 270° = West): catinin baktigi yön. Guney cepheler en yuksek potansiyel sunar
+
+
+[Roof] RoofType	
+Roof style classification (e.g. “Spitzdach” = pitched roof, “Flachdach” = flat roof): cati tipi siniflandirmasidir. Montaj teknigini ve panel yerlesimini buna gore belirlenir. 
+
+
+
+[Energy Production, gain metrics ] Power
+	Estimated installable PV capacity on this surface (kWp): bu cati yuzeyinden elde edilebilecek kurulu guc kwp cinsinden. Genellikle PvAREA x Panel verimi olarka hesaplanir.
+
+
+[Potentially suitable decision] Eignung	Suitability class (High/Medium/Low) based on slope, aspect and shading: uygunlugu belirtir. High/medium/low olarak siniflanir. Egim/aspect ve golge durumu goz onunde bulundurularak atanir. 
+
+[Potentially suitable decision] Aufstd	Stand-off or mounting height parameter for panel racking: catida panel montaji icin asgari yukseklik stand-off degeri veya montaj seviyesi bilgisi. 
+
+[Potentially suitable decision] Geplex_Dac	
+Internal code or layer name from the Geoplex DAC analysis package. Veri saglayici veya isleme katmanina ozgu dahili kod. 
+
+[Roof] PvArea	
+Usable planar area for PV installation (m²): catidaki alanlar cikarildiktan sonra kullanilabilir alan.
+
+
+Energy Production, gain metrics ] ErtKwP_K
+	
+Annual energy yield per kWp (kWh/kWp), algorithm version “K”: kurulu guc basina yillik uretim tahmini _K veya KA farkli algoritmalari belirtir.
+Energy Production, gain metrics ] ErtKwP_KA	
+Adjusted annual energy yield per kWp (kWh/kWp), algorithm version “KA”
+
+Energy Production, gain metrics ] ErtKwhaK	
+Annual energy yield per m² (kWh/m²), version “K”: Important metric on gain.
+
+Energy Production, gain metrics ] ErtKwhaKA	Adjusted annual energy yield per m² (kWh/m²), version “KA”: duzeltme
+PercentMs	
+Percentage of roof surface classified as module-suitable by the base method
+PercentMsA	
+Adjusted percentage of module-suitable surface after correction
+
+Schatten	
+Shading metric on the surface (e.g. percent area shaded or shading hours)
+
+SchattenA	
+Adjusted shading metric
+
+
+[Environmental and Economical Affect] CO2Savings	Estimated annual CO₂ emissions avoided thanks to PV generation (kg or t)
+	
+Energy Production, gain metrics ] 
+Yield
+	System performance ratio or overall yield factor. 
+
+Energy Production, gain metrics ] ModuleCoun	Estimated number of PV modules that can be installed on this surface.
+
+Energy Production, gain metrics ] Irradiatio	
+Annual solar irradiation on the surface (kWh/m²) : Affects the capacity of the panels.
+
+[Roof] Area3D	
+True three-dimensional surface area accounting for slope (m²): 
+
+[LOCATION ] GEMEINDE_N	Short municipality code or name
+[LOCATION
+LANGNAME	Full municipality name
+[LOCATION
+KREIS_NR	District (Kreis) code
+[LOCATION
+KREIS	District name
+[LOCATION ElevationS	Average elevation of the surface above sea level (m)
+
+JAHR	Data collection or reference year
+
+HERKUNFT	Data source or origin (e.g. “LUBW”, “Geoplex GIS GmbH”)
+Shape_Leng	Perimeter length of the polygon (m)
+Shape_Area	Planar area of the polygon (m²) 
+geometry	The actual MultiPolygon geometry for spatial operations
+
+
+Critical or can be critical for forecasting:
+Field
+JAHR
+PvArea
+Power
+Irradiatio
+Slope
+Aspect
+Schatten / SchattenA
+ErtKwP_K / ErtKwhaK
+Yield
+ModuleCoun
+
+What the rooftop-potential map is doing
+Step	What happens under the hood	Why it matters
+1 — Re-project the data	The building-roof shapefile is re-projected to EPSG 3857 (Web-Mercator).	So distances/areas are in meters and the polygons line up with the base-map tiles.
+2 — Grab key fields	The script auto-detects columns that hold slope (roof pitch) and aspect (azimuth⁠/⁠orientation).	Pitch and orientation are the two biggest geometric drivers of solar output.
+3 — Classify potential	Each roof face is run through classify():
+• High = slope 25–35 ° and aspect 150–210 ° (i.e., south-facing, near-optimal tilt)
+• Medium = slope 15–25 ° and aspect 120–240 ° (still decent)
+• everything else → Low.	Gives an instant “good / OK / poor” quality flag that investors and planners can act on.
+4 — Render the map	Polygons are plotted with geopandas using the Potential field as the colour; a light CartoDB Positron basemap is added via contextily.	High/Medium/Low zones pop out visually, and the basemap provides street-level context.
+5 — Compute KPIs	For each potential class the script sums PvArea (m²) and, if energy data are present, calculates average kWh per m².	Quantifies how much good roof area exists and how productive it could be.
+6 — (If dates + energy) Forecast	Where year or date info exists, annual energy totals per class are modelled with Holt-Winters exponential smoothing, projecting 5 years ahead.	Shows the expected growth curve of rooftop generation for strategic planning.
+Practical insights you can pull from the map
+•	Investment targeting – Clusters of High roofs highlight neighbourhoods with the quickest pay-back for rooftop PV.
+•	Policy design – If Low dominates, you might explore vertical PV, façade solutions, or incentives for structural roof adjustments.
+•	Grid impact – Dense patches of High/Medium potential can flag where voltage-rise mitigation (storage, smart inverters) will be needed as adoption ramps up.
+
