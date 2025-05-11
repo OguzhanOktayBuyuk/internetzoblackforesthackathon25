@@ -1,0 +1,382 @@
+import os
+import warnings
+import pandas as pd
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import contextily as ctx
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+
+def _find_field(columns, keywords):
+    """Return the first column whose name contains any of the keywords (case-insensitive)."""
+    for key in keywords:
+        for col in columns:
+            if key.lower() in col.lower():
+                return col
+    return None
+
+
+def _plot_bar(df, x_col, y_col, title, filename, image_dir):
+    """
+    Create and save a bar plot from a DataFrame and return the saved image path.
+    """
+    os.makedirs(image_dir, exist_ok=True)
+    plt.figure()
+    plt.bar(df[x_col].astype(str), df[y_col])
+    plt.title(title)
+    plt.xlabel(x_col)
+    plt.ylabel(y_col)
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    path = os.path.join(image_dir, filename)
+    plt.savefig(path)
+    plt.close()
+    return path
+
+
+def _plot_forecast(df_forecast, title, filename, image_dir):
+    """Plot forecast data (Wide‐format DF indexed by Year) and save image."""
+    os.makedirs(image_dir, exist_ok=True)
+    plt.figure()
+    for col in df_forecast.columns:
+        plt.plot(df_forecast.index, df_forecast[col], marker="o", label=col)
+    plt.title(title)
+    plt.xlabel("Year")
+    plt.ylabel("Forecast Energy (kWh)")
+    plt.legend()
+    plt.tight_layout()
+    path = os.path.join(image_dir, filename)
+    plt.savefig(path)
+    plt.close()
+    return path
+
+
+# -----------------------------------------------------------------------------
+#  OVERHEAD LINE SEGMENTS (unchanged)
+# -----------------------------------------------------------------------------
+
+def summarize_overhead_line_segments_solar(shapefile_paths, image_dir: str = "../images"):
+    """<same docstring as before – unchanged>"""
+    summaries = []
+    combined_gdf = []
+    for path in shapefile_paths:
+        src = os.path.splitext(os.path.basename(path))[0]
+        gdf = gpd.read_file(path).to_crs(epsg=3857)
+        gdf["length_km"] = gdf.geometry.length / 1000
+
+        summaries.append(
+            {
+                "Source": src,
+                "Total Length (km)": gdf["length_km"].sum(),
+                "Avg Length (km)": gdf["length_km"].mean(),
+            }
+        )
+        gdf["Source"] = src
+        combined_gdf.append(gdf)
+
+    df_summary = pd.DataFrame(summaries)
+    results = {"per_source_summary": df_summary}
+
+    results["source_bar_plot"] = _plot_bar(
+        df_summary,
+        "Source",
+        "Total Length (km)",
+        "Total Overhead Length by Source",
+        "combined_length_by_source.png",
+        image_dir,
+    )
+
+    all_gdf = pd.concat(combined_gdf, ignore_index=True)
+
+    # Histogram
+    hist_df = all_gdf[["length_km"]].copy()
+    hist_df["Count"] = 1
+    hist_df = hist_df.groupby("length_km")["Count"].sum().reset_index()
+    results["combined_histogram"] = _plot_bar(
+        hist_df,
+        "length_km",
+        "Count",
+        "Combined Segment Length Distribution",
+        "combined_length_histogram.png",
+        image_dir,
+    )
+
+    # Temporal analysis
+    year_col = _find_field(all_gdf.columns, ["jahr", "year", "datum", "date"])
+    if year_col is not None:
+        if any(x in year_col.lower() for x in ["date", "datum"]):
+            all_gdf["Year"] = pd.to_datetime(all_gdf[year_col], errors="coerce").dt.year
+        else:
+            all_gdf["Year"] = pd.to_numeric(all_gdf[year_col], errors="coerce").astype("Int64")
+
+    if "Year" in all_gdf.columns:
+        df_year = all_gdf.dropna(subset=["Year"]).copy()
+        annual = (
+            df_year.groupby("Year")["length_km"].sum().reset_index(name="Total Length (km)")
+        )
+        results["annual_length_by_year"] = annual
+
+        thresh = df_year["length_km"].quantile(0.95)
+        bn = (
+            df_year[df_year["length_km"] > thresh]
+            .groupby("Year")
+            .size()
+            .reset_index(name="Bottleneck Count")
+        )
+        results["bottleneck_counts"] = bn
+
+        fig, ax1 = plt.subplots()
+        ax1.plot(annual["Year"], annual["Total Length (km)"], marker="o", label="Total Length")
+        ax2 = ax1.twinx()
+        ax2.plot(bn["Year"], bn["Bottleneck Count"], marker="x", linestyle="--", label="Bottleneck Count")
+        ax1.set_xlabel("Year")
+        ax1.set_ylabel("Total Length (km)")
+        ax2.set_ylabel("Bottleneck Count")
+        lines, labels = ax1.get_legend_handles_labels()
+        l2, lab2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines + l2, labels + lab2, loc="upper left")
+        plt.title("Annual Combined Length & Bottlenecks")
+        ts_path = os.path.join(image_dir, "combined_annual_bottleneck.png")
+        fig.tight_layout()
+        fig.savefig(ts_path)
+        plt.close(fig)
+        results["combined_ts_plot"] = ts_path
+
+    return results
+
+
+# -----------------------------------------------------------------------------
+#  SOLAR POTENTIAL WITH INVESTMENT & FORECAST EXTENSION
+# -----------------------------------------------------------------------------
+
+def summarize_solar_potential(
+    shapefile_path: str,
+    image_dir: str = "../images",
+    forecast_periods: int = 5,
+):
+    """
+    Compute, visualise, and *forecast* rooftop solar potential.
+
+    Adds a Holt‑Winters forecast of total yearly energy generation for each
+    potential class if a usable date field is available.
+    """
+
+    prefix = os.path.splitext(os.path.basename(shapefile_path))[0]
+    gdf = gpd.read_file(shapefile_path).to_crs(epsg=3857)
+
+    if "PvArea" not in gdf.columns:
+        raise KeyError("Missing 'PvArea' column")
+
+    # ------------------------------------------------------------------
+    #  CLASSIFICATION BASED ON GEOMETRY
+    # ------------------------------------------------------------------
+    slope_field = "Slope" if "Slope" in gdf.columns else _find_field(gdf.columns, ["slope", "slp"])
+    aspect_field = "Aspect" if "Aspect" in gdf.columns else _find_field(gdf.columns, ["aspect", "asp"])
+    if slope_field is None or aspect_field is None:
+        raise KeyError("Slope or Aspect column not found")
+
+    def classify(slope, aspect):
+        if pd.isna(slope) or pd.isna(aspect):
+            return "Low"
+        if 25 <= slope <= 35 and 150 <= aspect <= 210:
+            return "High"
+        if 15 <= slope < 25 and 120 <= aspect <= 240:
+            return "Medium"
+        return "Low"
+
+    gdf["Potential"] = gdf.apply(lambda r: classify(r[slope_field], r[aspect_field]), axis=1)
+
+    # ------------------------------------------------------------------
+    #  ENERGY CALCULATION
+    # ------------------------------------------------------------------
+    power_field = _find_field(gdf.columns, ["power", "kwp"])
+    irr_field = _find_field(gdf.columns, ["irradiation", "irradiance", "irr"])
+    yield_field = _find_field(gdf.columns, ["ertkwp", "yield", "kwh"])
+
+    if power_field and yield_field:
+        gdf["Energy_kWh"] = gdf[power_field] * gdf[yield_field]
+    elif power_field and irr_field:
+        efficiency = 0.15  # conservative assumption
+        gdf["Energy_kWh"] = gdf["PvArea"] * gdf[irr_field] * efficiency
+    else:
+        warnings.warn("Cannot compute Energy_kWh – missing fields")
+        gdf["Energy_kWh"] = pd.NA
+
+    # ------------------------------------------------------------------
+    #  STATIC KPI VISUALS (area, efficiency)
+    # ------------------------------------------------------------------
+    results = {}
+
+    area_summary = gdf.groupby("Potential")["PvArea"].sum().reset_index(name="Total PvArea (m²)")
+    results["area_summary"] = area_summary
+    results["area_plot"] = _plot_bar(
+        area_summary,
+        "Potential",
+        "Total PvArea (m²)",
+        "Solar Panel Area by Potential Class",
+        f"{prefix}_area_by_potential.png",
+        image_dir,
+    )
+
+    if gdf["Energy_kWh"].notna().any():
+        gdf["Energy_per_m2"] = gdf["Energy_kWh"] / gdf["PvArea"].replace({0: pd.NA})
+        invest_summary = (
+            gdf.groupby("Potential")["Energy_per_m2"].mean().reset_index(name="kWh per m²")
+        )
+        results["yield_efficiency_summary"] = invest_summary
+        results["yield_efficiency_plot"] = _plot_bar(
+            invest_summary,
+            "Potential",
+            "kWh per m²",
+            "Avg Energy Yield per Area by Potential Class",
+            f"{prefix}_yield_efficiency.png",
+            image_dir,
+        )
+
+    # ------------------------------------------------------------------
+    #  FORECAST SECTION
+    # ------------------------------------------------------------------
+    year_col = _find_field(gdf.columns, ["jahr", "year", "datum", "date"])
+    if year_col is not None and gdf[year_col].notna().any() and gdf["Energy_kWh"].notna().any():
+        if any(x in year_col.lower() for x in ["date", "datum"]):
+            gdf["Year"] = pd.to_datetime(gdf[year_col], errors="coerce").dt.year
+        else:
+            gdf["Year"] = pd.to_numeric(gdf[year_col], errors="coerce").astype("Int64")
+        ts_df = (
+            gdf.dropna(subset=["Year"])
+            .groupby(["Year", "Potential"])["Energy_kWh"]
+            .sum()
+            .reset_index()
+        )
+
+        forecasts = {}
+        df_forecast_wide = None
+        for pot in ts_df["Potential"].unique():
+            sub = ts_df[ts_df["Potential"] == pot].sort_values("Year")
+            if len(sub) < 3:
+                continue  # not enough points
+            model = ExponentialSmoothing(sub["Energy_kWh"], trend="add", seasonal=None)
+            fit = model.fit(optimized=True)
+            forecast_index = range(int(sub["Year"].iloc[-1]) + 1, int(sub["Year"].iloc[-1]) + 1 + forecast_periods)
+            forecast_values = fit.forecast(forecast_periods)
+            forecasts[pot] = pd.Series(forecast_values.values, index=forecast_index)
+
+            # Combine wide format for plotting later
+            if df_forecast_wide is None:
+                df_forecast_wide = forecasts[pot].to_frame(name=pot)
+            else:
+                df_forecast_wide = df_forecast_wide.join(forecasts[pot].rename(pot), how="outer")
+
+        if df_forecast_wide is not None:
+            # insert historical last value to avoid jump in plot
+            hist_last = (
+                ts_df.groupby("Potential")
+                .apply(lambda x: x.set_index("Year")["Energy_kWh"].tail(1))
+                .droplevel(0)
+            )
+            for pot, series in forecasts.items():
+                last_year = series.index.min() - 1
+                if pot in hist_last.index:
+                    df_forecast_wide.loc[last_year, pot] = hist_last.loc[pot]
+            df_forecast_wide.sort_index(inplace=True)
+
+            results["energy_forecast_df"] = df_forecast_wide
+            results["energy_forecast_plot"] = _plot_forecast(
+                df_forecast_wide,
+                "Forecast Annual Energy Generation",
+                f"{prefix}_energy_forecast.png",
+                image_dir,
+            )
+    else:
+        warnings.warn(
+            "Skipping forecast – no suitable date field or energy values available.",
+            RuntimeWarning,
+        )
+
+    # ------------------------------------------------------------------
+    #  MAP VISUAL: POTENTIAL CLASSES
+    # ------------------------------------------------------------------
+    fig, ax = plt.subplots(figsize=(8, 8))
+    gdf.plot(
+        ax=ax,
+        column="Potential",
+        categorical=True,
+        legend=True,
+        edgecolor="k",
+        linewidth=0.2,
+    )
+    ctx.add_basemap(ax, source=ctx.providers.CartoDB.Positron)
+    plt.title("Rooftop Solar Potential Classes")
+    map_path = os.path.join(image_dir, f"{prefix}_potential_map.png")
+    fig.tight_layout()
+    fig.savefig(map_path, dpi=300)
+    plt.close(fig)
+    results["map_plot"] = map_path
+
+    return results
+
+
+# -----------------------------------------------------------------------------
+#  POWER GRID GRID‑PLOT (unchanged except for minor refactor)
+# -----------------------------------------------------------------------------
+
+def plot_power_grid(shapefile_path: str, image_dir: str = "../images", n_rows: int = 2, n_cols: int = 2):
+    """Plot point power data on a spatial grid."""
+    os.makedirs(image_dir, exist_ok=True)
+    gdf = gpd.read_file(shapefile_path).to_crs(epsg=3857)
+    if "Power" not in gdf.columns:
+        raise KeyError("Missing 'Power' column in shapefile")
+
+    min_p, max_p = gdf["Power"].min(), gdf["Power"].max()
+    gdf["power_norm"] = (gdf["Power"] - min_p) / (max_p - min_p) if max_p > min_p else 0.0
+
+    if not all(gdf.geometry.geom_type == "Point"):
+        gdf["geometry"] = gdf.geometry.centroid
+
+    xs, ys = gdf.geometry.x, gdf.geometry.y
+    xmin, ymin, xmax, ymax = gdf.total_bounds
+    x_lines = [xmin + i * (xmax - xmin) / n_cols for i in range(1, n_cols)]
+    y_lines = [ymin + j * (ymax - ymin) / n_rows for j in range(1, n_rows)]
+
+    fig, ax = plt.subplots(figsize=(10, 10))
+    for x in x_lines:
+        ax.axvline(x, color="black", linewidth=1)
+    for y in y_lines:
+        ax.axhline(y, color="black", linewidth=1)
+    scatter = ax.scatter(xs, ys, c=gdf["power_norm"], cmap="viridis", s=50)
+    plt.colorbar(scatter, label="Normalized Power")
+    ax.set_title(f"Power Points on {n_rows}x{n_cols} Grid")
+    ax.set_xlabel("X coordinate (m)")
+    ax.set_ylabel("Y coordinate (m)")
+    plt.tight_layout()
+
+    prefix = os.path.splitext(os.path.basename(shapefile_path))[0]
+    plot_path = os.path.join(image_dir, f"{prefix}_power_grid.png")
+    fig.savefig(plot_path, dpi=300)
+    plt.close(fig)
+    return plot_path
+
+
+# -----------------------------------------------------------------------------
+#  DEMO (main)
+# -----------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    shp_freiburg = "../data/Solarpotenziale_Dachseiten_Freiburg_Stadt.shp"
+    shp_breisgau = "../data/Solarpotenziale_Dachseiten_LK_Breisgau_Hochschwarzwald.shp"
+    shp_emmendingen = "../data/Solarpotenziale_Dachseiten_LK_Emmendingen.shp"
+    shp_waldshut = "../data/Solarpotenziale_Dachseiten_LK_Waldshut.shp"
+    shp_list = [shp_freiburg, shp_breisgau, shp_emmendingen, shp_waldshut]
+
+    overhead_results = summarize_overhead_line_segments_solar(
+        shp_list, "../imagesForSolarPotanzielllatest"
+    )
+    print(overhead_results)
+
+    for shp in shp_list:
+        solar_results = summarize_solar_potential(
+            shp, "../imagesForSolarPotanzielllatest", forecast_periods=5
+        )
+        print(solar_results)
+        grid_plot_path = plot_power_grid(shp, "../imagesForSolarPotanzielllatest")
+        print(f"Grid plot saved at: {grid_plot_path}")
