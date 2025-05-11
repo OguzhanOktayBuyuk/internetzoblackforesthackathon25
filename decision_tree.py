@@ -25,7 +25,9 @@ if __name__ == "__main__":
         print(f"Detected encoding: {encoding}")
 
     # Import the CSV file
-    all_addresses = pd.read_csv(path_data, on_bad_lines='skip', sep=',', decimal=',', encoding=encoding)
+    all_addresses = pd.read_csv(
+        path_data, on_bad_lines='skip',
+        sep=',', decimal=',', encoding=encoding)
 
     # Show the column names
     print(all_addresses.columns)
@@ -66,8 +68,10 @@ if __name__ == "__main__":
         plt.figure(figsize=(10, 8))
         sns.heatmap(
             model_data.corr(), annot=True, fmt='.2f', cmap='coolwarm',
+            # y label only the target
             xticklabels=model_data.columns, yticklabels=model_data.columns)
         plt.title('Correlation Matrix')
+        plt.savefig("img/correlation_matrix.png")
         plt.show()
 
     # X is everything except the target column
@@ -119,7 +123,7 @@ if __name__ == "__main__":
             print("Plotting tree...")
             plt.figure(figsize=(20, 10))
             plot_tree(clf, filled=True, feature_names=X.columns, class_names=['no', 'yes'])
-            plt.savefig("data/results/decision_tree.png")
+            plt.savefig("img/decision_tree.png")
             plt.show()
             print("Tree plotted.")
     else:
