@@ -8,3 +8,4 @@ The main scripts for this forcast are:
 - `decision_tree.py`: creates a decision or a regression tree. the target variable is whether a household does have a solar panel or not.
 - `forecast_household.py`: based on Badenova's total forecast for the five regions (Teilnetzgebiete) and based on the predictions by the decision tree, this script does create the forecasts for the PV MV of individual households.
 
+The data given by Badenova should be in a folder `Hackathon`.
