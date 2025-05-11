@@ -29,6 +29,9 @@ def add_the_badenova_region(df: pd.DataFrame, region_dict: dict) -> pd.DataFrame
     return df
 
 def forecast_household_supply(df: pd.DataFrame, region_forcast: float) -> pd.DataFrame:
+    # if target = 1, then set the predictions to 1 else keep the value
+    df['predictions'] = np.where(df['target'] == 1, 1, df['predictions'])
+
     # compute sum of all values in the column 'predictions'
     total_pred = df['predictions'].sum()
 
